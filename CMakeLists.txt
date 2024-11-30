@@ -38,8 +38,11 @@ include_directories(include)
 # Add source to this project's executable.
 add_executable (clientFileManager 
 	src/clientFileManager.cpp 
+    src/client.cpp
+    src/file_manager.cpp
 	include/clientFileManager.h
-)
+    include/client.h  
+    include/file_manager.h)
 
 # Линкуем библиотеки
 target_link_libraries(clientFileManager ${Boost_LIBRARIES})
