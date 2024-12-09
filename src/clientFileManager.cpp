@@ -26,7 +26,7 @@ int main()
 		boost::asio::io_context io_context;
 
 		// Создаем клиента
-		auto client = std::make_shared<TcpClient>(io_context, "Ur file");
+		auto client = std::make_shared<TcpClient>(io_context, "C:/Users/MAKSMSD/Desktop/outClient");
 		client.get()->start("127.0.0.1", "200");
 		// Запуск 
 

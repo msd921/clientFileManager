@@ -14,7 +14,20 @@ FileManager::FileManager(const string& base_dir)
 	}
 }
 
-void FileManager::write_to_file(const string& filename, const string& data, bool overwrite)
+void FileManager::add_to_file(const string& filename, const string& data)
+{
+	std::string target_filename = base_directory_ + "/" + filename;
+
+	std::ofstream file(target_filename, std::ios::app | std::ios::binary);
+
+	if (!file) {
+		throw std::runtime_error("Не удалось открыть файл для записи: " + target_filename);
+	}
+	file.write(data.data(), data.size());
+	file.close();
+}
+
+std::string FileManager::write_to_file(const string& filename, const string& data, bool overwrite)
 {
 	std::string target_filename = base_directory_ + "/" + filename;
 
@@ -29,21 +42,27 @@ void FileManager::write_to_file(const string& filename, const string& data, bool
 	}
 	new_file.write(data.data(), data.size());
 	new_file.close();
+	target_filename.erase(0, base_directory_.size() + 1);
+	return target_filename;
 }
 
-void FileManager::read_from_file(const std::string& filename, std::ostream& output_stream)
+void FileManager::read_from_file(const std::string& filename, std::ostream& output_stream, std::size_t offset, std::size_t chunk_size)
 {
 	std::ifstream file(base_directory_ + "/" + filename, std::ios::binary);
 	if (!file) {
 		throw std::runtime_error("Не удалось открыть файл для чтения: " + filename);
 	}
 
-	const std::size_t buffer_size = 4096; // Размер буфера
-	std::vector<char> buffer(buffer_size);
-	
-	while (file.read(buffer.data(), buffer_size) || file.gcount() > 0) {
-		output_stream.write(buffer.data(), file.gcount());
+	// Переходим к нужной позиции в файле
+	file.seekg(offset, std::ios::beg);
+	if (!file) {
+		throw std::runtime_error("Ошибка позиционирования в файле: " + filename);
 	}
+
+	// Читаем данные
+	std::vector<char> buffer(chunk_size);
+	file.read(buffer.data(), chunk_size);
+	output_stream.write(buffer.data(), file.gcount());
 }
 
 void FileManager::delete_file(const std::string& filename)
@@ -57,6 +76,14 @@ void FileManager::delete_file(const std::string& filename)
 	}
 }
 
+std::size_t FileManager::get_file_size(const string& filename)
+{
+	if (!file_exists(filename)) {
+		return 0;
+	}
+	return fs::file_size(base_directory_ + "/" + filename);
+}
+
 string FileManager::get_unique_filename(const string& filename)
 {
 	std::string new_filename = filename;
@@ -67,8 +94,7 @@ string FileManager::get_unique_filename(const string& filename)
 		oss << filename << "_copy" << count++ << fs::path(filename).extension().string();
 		new_filename = oss.str();
 	}
-
-	return new_filename;
+	return (base_directory_ + "/" + new_filename);
 }
 
 bool FileManager::file_exists(const std::string& filename)
