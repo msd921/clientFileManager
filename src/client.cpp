@@ -2,7 +2,7 @@
 
 TcpClient::TcpClient(boost::asio::io_context& io_context, const std::string& base_dir)
 	: resolver_(io_context), socket_(io_context),
-	file_manager_(std::make_unique<FileManager>(base_dir))
+	file_manager_(std::make_unique<FileHandler>(base_dir))
 {
 }
 
@@ -76,7 +76,7 @@ void TcpClient::receive_response() {
 					break;
 
 				case ClientState::ReceivingFile:
-					self->handle_file_response(response);
+					self->handle_file_response(response, length);
 					break;
 
 				case ClientState::UploadingFile:
@@ -121,7 +121,9 @@ void TcpClient::receive_response() {
 					}
 					return;
 				}
-				self->receive_response();
+				if (self->current_state != ClientState::ReceivingFile) {
+					self->receive_response();
+				}
 			}
 			else {
 				std::cerr << "Ошибка чтения: " << ec.message() << "\n";
@@ -132,7 +134,7 @@ void TcpClient::receive_response() {
 void TcpClient::send_file_data()
 {
 	auto self = shared_from_this();
-	const std::size_t chunk_size = 1024; // Размер блока данных
+	const std::size_t chunk_size = 1024 * 1024; // Размер блока данных
 
 	// Позиция в файле
 	auto current_position = std::make_shared<std::size_t>(0);
@@ -144,6 +146,7 @@ void TcpClient::send_file_data()
 
 			std::ostringstream buffer_stream;
 
+
 			// Читаем следующую часть файла
 			self->file_manager_->read_from_file(self->current_file, buffer_stream, *current_position, chunk_size);
 
@@ -152,7 +155,7 @@ void TcpClient::send_file_data()
 			if (chunk_data->empty()) {
 				// Все данные отправлены
 				std::cout << "Файл полностью отправлен!" << std::endl;
-				//self->notify_end_of_transfer();
+				self->file_manager_->close_file();
 				return;
 			}
 
@@ -175,6 +178,7 @@ void TcpClient::send_file_data()
 			);
 		}
 		catch (const std::exception& e) {
+			self->file_manager_->close_file();
 			std::cerr << "Ошибка при чтении или отправке данных: " << e.what() << std::endl;
 		}
 		};
@@ -194,34 +198,82 @@ void TcpClient::handle_list_response(const std::string& response)
 		std::cout << "Список файлов получен.\n";
 		current_state = ClientState::Idle;
 	}
-	else {
+	else if (response != "\n") {
 		std::cout << "Файл: " << response;
 	}
 }
 
-void TcpClient::handle_file_response(const std::string& response) {
+void TcpClient::handle_file_response(const std::string& response, std::size_t bytes_transfered) {
 	if (response == "ERROR: file not found\n") {
 		std::cout << "Файл " << current_file << " не был найден.\n";
 		current_state = ClientState::Idle;
 		is_new_file = true;
+		file_manager_->close_file();
+		bytes_received = 0;
 		return;
 	}
 	if (response == "END\n") {
 		std::cout << "Файл " << current_file << " получен.\n";
 		current_state = ClientState::Idle;
 		is_new_file = true;
+		bytes_received = 0;
+		file_manager_->close_file();
+		receive_response();
+		
 	}
 	else {
 		if (is_new_file) {
-			// Пишем данные в файл через FileManager
-			current_file = file_manager_->write_to_file(current_file, response, false);
+			bytes_received = 0;
+			// Пишем данные в файл через FileHandler
+			current_file = file_manager_->create_file(current_file, false);
+			size_t space_pos = response.find(' ');
+			std::string receiving_filename = response.substr(0, space_pos);
+			if (current_file == receiving_filename) {
+				std::cout << "Файлы сходятся\n";
+			}
+			receiving_file_size = std::stoull(response.substr(space_pos + 1));
 			is_new_file = false;
+			receive_file_chunk();
 		}
 		else {
-			file_manager_->add_to_file(current_file, response);
+			// Накопление данных в буфере
+			bytes_received += bytes_transfered;
+			// Записываем в файл, если буфер достиг порогового значения
+
+			if (bytes_received >= receiving_file_size) {
+				file_manager_->add_to_file(current_file, response.substr(0, (bytes_transfered - (bytes_received - receiving_file_size))));
+				handle_file_response("END\n", 10);
+			}
+			else {
+				file_manager_->add_to_file(current_file, response);
+				receive_file_chunk();
+			}
+
 		}
 	}
 }
+
+void TcpClient::receive_file_chunk()
+{
+	auto buffer = std::make_shared<std::vector<char>>((1024 * 64));
+	auto self = shared_from_this();
+
+	self->socket_.async_read_some(boost::asio::buffer(*buffer),
+		[self, buffer](const boost::system::error_code& error, std::size_t bytes_transferred) {
+			if (!error) {
+				std::string data_to_write(buffer->begin(), buffer->begin() + bytes_transferred);
+				self->handle_file_response(data_to_write.c_str(), bytes_transferred);
+				// Проверяем, достигли ли ожидаемого размера файла
+			}
+			else if (error == boost::asio::error::eof) {
+				std::cout << "Передача файла завершена досрочно!" << std::endl;
+			}
+			else {
+				std::cerr << "Ошибка приема файла: " << error.message() << std::endl;
+			}
+		});
+}
+
 
 void TcpClient::list_files() {
 	current_state = ClientState::ListingFiles;
@@ -243,8 +295,9 @@ void TcpClient::upload_file(const std::string& filename)
 		send_command("UPLOAD " + filename + " " + std::to_string(file_manager_->get_file_size(filename)));
 	}
 	else {
-		receive_response();
-		//send_command("Error filename");//  чтобы не закрывать подключение - временное решение
+
+		send_command("Error filename");//  чтобы не закрывать подключение - временное решение
+		//receive_response();
 		std::cerr << "Файла " << filename << " не существует!\n";
 	}
 }

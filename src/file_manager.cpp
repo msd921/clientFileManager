@@ -6,7 +6,7 @@
 
 namespace fs = std::filesystem;
 
-FileManager::FileManager(const string& base_dir)
+FileHandler::FileHandler(const string& base_dir)
 	: base_directory_(base_dir)
 {
 	if (!fs::exists(base_directory_)) {
@@ -14,20 +14,28 @@ FileManager::FileManager(const string& base_dir)
 	}
 }
 
-void FileManager::add_to_file(const string& filename, const string& data)
+void FileHandler::add_to_file(const string& filename, const string& data)
 {
-	std::string target_filename = base_directory_ + "/" + filename;
-
-	std::ofstream file(target_filename, std::ios::app | std::ios::binary);
-
-	if (!file) {
-		throw std::runtime_error("Не удалось открыть файл для записи: " + target_filename);
+	if (is_first_pass_for_writing || (current_filename_for_writing != filename))
+	{
+		if (write_stream.is_open()) {
+			write_stream.close();
+		}
+		current_filename_for_writing = filename;
+		is_first_pass_for_writing = false;
+		write_stream = std::ofstream((base_directory_ + "/" + filename), std::ios::app | std::ios::binary);
+		if (!write_stream) {
+			throw std::runtime_error("Не удалось открыть файл для записи: " + current_filename_for_writing);
+		}
 	}
-	file.write(data.data(), data.size());
-	file.close();
+
+	write_stream.write(data.data(), data.size());
+	if (!write_stream) {
+		throw std::runtime_error("Ошибка записи в файл: " + current_filename_for_writing);
+	}
 }
 
-std::string FileManager::write_to_file(const string& filename, const string& data, bool overwrite)
+std::string FileHandler::create_file(const string& filename, bool overwrite)
 {
 	std::string target_filename = base_directory_ + "/" + filename;
 
@@ -40,32 +48,63 @@ std::string FileManager::write_to_file(const string& filename, const string& dat
 	if (!new_file) {
 		throw std::runtime_error("Не удалось открыть файл для записи: " + target_filename);
 	}
-	new_file.write(data.data(), data.size());
 	new_file.close();
 	target_filename.erase(0, base_directory_.size() + 1);
 	return target_filename;
 }
 
-void FileManager::read_from_file(const std::string& filename, std::ostream& output_stream, std::size_t offset, std::size_t chunk_size)
+void FileHandler::close_file()
 {
-	std::ifstream file(base_directory_ + "/" + filename, std::ios::binary);
-	if (!file) {
-		throw std::runtime_error("Не удалось открыть файл для чтения: " + filename);
+	if (write_stream.is_open()) {
+		write_stream.close();
+	}
+	is_first_pass_for_writing = true;
+	if (read_stream.is_open()) {
+		read_stream.close();
+	}
+	is_first_pass_for_reading = true;
+}
+
+void FileHandler::read_from_file(const std::string& filename, std::ostream& output_stream, std::size_t offset, std::size_t chunk_size)
+{
+	if (is_first_pass_for_reading || (current_filename_for_reading != filename)) {
+		if (read_stream.is_open()) {
+			read_stream.close();
+		}
+		current_filename_for_reading = filename;
+		is_first_pass_for_reading = false;
+		read_stream = std::ifstream(base_directory_ + "/" + filename, std::ios::binary);
+		if (!read_stream) {
+			throw std::runtime_error("Не удалось открыть файл для чтения: " + filename);
+		}
 	}
 
+	if (!read_stream.is_open()) {
+		throw std::runtime_error("Файл не был открыт: " + filename);
+	}
+	read_stream.clear();
 	// Переходим к нужной позиции в файле
-	file.seekg(offset, std::ios::beg);
-	if (!file) {
+	read_stream.seekg(offset, std::ios::beg);
+	if (!read_stream) {
 		throw std::runtime_error("Ошибка позиционирования в файле: " + filename);
+	}
+
+	std::size_t file_size = get_file_size(filename);
+	if (offset + chunk_size > file_size) {
+		chunk_size = file_size - offset; // Уменьшаем размер чтения
 	}
 
 	// Читаем данные
 	std::vector<char> buffer(chunk_size);
-	file.read(buffer.data(), chunk_size);
-	output_stream.write(buffer.data(), file.gcount());
+	read_stream.read(buffer.data(), chunk_size);
+	output_stream.write(buffer.data(), read_stream.gcount());
+	if (!read_stream.good()) {
+		throw std::runtime_error("Файл не гуд: " + filename);
+	}
+	
 }
 
-void FileManager::delete_file(const std::string& filename)
+void FileHandler::delete_file(const std::string& filename)
 {
 	if (fs::remove(base_directory_ + "/" + filename) == 0)
 	{
@@ -76,7 +115,7 @@ void FileManager::delete_file(const std::string& filename)
 	}
 }
 
-std::size_t FileManager::get_file_size(const string& filename)
+std::size_t FileHandler::get_file_size(const string& filename)
 {
 	if (!file_exists(filename)) {
 		return 0;
@@ -84,20 +123,23 @@ std::size_t FileManager::get_file_size(const string& filename)
 	return fs::file_size(base_directory_ + "/" + filename);
 }
 
-string FileManager::get_unique_filename(const string& filename)
+string FileHandler::get_unique_filename(const string& filename)
 {
+	std::string base_name = fs::path(filename).stem().string(); // Имя файла без расширения
+	std::string extension = fs::path(filename).extension().string();
+
 	std::string new_filename = filename;
 	int count = 1;
 
 	while (file_exists(new_filename)) {
 		std::ostringstream oss;
-		oss << filename << "_copy" << count++ << fs::path(filename).extension().string();
+		oss << base_name << "_copy" << count++ << extension;
 		new_filename = oss.str();
 	}
 	return (base_directory_ + "/" + new_filename);
 }
 
-bool FileManager::file_exists(const std::string& filename)
+bool FileHandler::file_exists(const std::string& filename)
 {
 	return fs::exists(base_directory_ + "/" + filename);
 }
