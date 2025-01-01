@@ -1,0 +1,17 @@
+{
+  "configurations": [
+    {
+      "name": "Linux Debug",
+      "includePath": [
+        "/usr/include/**",
+        "/usr/local/include/**",
+        "${workspaceRoot}/**"
+      ],
+      "defines": [
+        "_DEBUG"
+      ],
+      "compilerPath": "/usr/bin/g++",
+      "intelliSenseMode": "clang-x64"
+    }
+  ]
+}
